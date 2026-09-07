@@ -1,4 +1,4 @@
-# EndField-ChattingAPP
+# EndField-ChattingAPP(开发中...)
 
 终末地AI群聊 —— 一个有真实账号系统的多人聊天网页:真人之间实时互聊,阿刀、小白、老哥三个 AI 群友也在群里。
 
