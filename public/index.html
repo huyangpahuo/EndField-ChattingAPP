@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>终末地群聊</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+  <!-- 登录 / 注册 -->
+  <div id="authView" class="app auth hidden">
+    <div class="header">终末地群聊</div>
+    <div class="auth-body">
+      <h2 id="authTitle">登录</h2>
+      <input id="authUsername" maxlength="16" placeholder="昵称(2-16位)" />
+      <input id="authPassword" type="password" maxlength="64" placeholder="密码(至少6位)" />
+      <div id="authError" class="auth-error"></div>
+      <button id="authSubmit" class="primary-btn">登录</button>
+      <div class="auth-switch">
+        <span id="authSwitchText">还没有账号?</span>
+        <a id="authSwitchBtn" href="javascript:void(0)">去注册</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- 聊天 -->
+  <div id="chatView" class="app hidden">
+    <div class="header">
+      <span>终末地群聊</span>
+      <span id="onlineTag" class="online-tag">在线 1 人</span>
+      <a id="logoutBtn" class="logout" href="javascript:void(0)">退出</a>
+    </div>
+    <div id="chat" class="chat"></div>
+    <div class="input-box">
+      <input id="input" maxlength="500" placeholder="说点什么… @阿刀 可以召唤他" />
+      <button id="sendBtn">发送</button>
+    </div>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    const TOKEN_KEY = "endfield_token";
+    const USER_KEY = "endfield_user";
+
+    const authView = $("authView");
+    const chatView = $("chatView");
+    const chat = $("chat");
+    const input = $("input");
+
+    let socket = null;
+    let myName = null;
+
+    // ============ 安全渲染:纯文本,杜绝 XSS ============
+    function textEl(tag, className, content) {
+      const el = document.createElement(tag);
+      if (className) el.className = className;
+      el.textContent = content ?? "";
+      return el;
+    }
+
+    function timeLabel(ts) {
+      if (!ts) return "";
+      const d = new Date(ts.replace(" ", "T"));
+      if (isNaN(d)) return "";
+      const now = new Date();
+      const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      const sameDay = d.toDateString() === now.toDateString();
+      if (sameDay) return hm;
+      return `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+    }
+
+    function addMessage(data) {
+      const isSelf = data.name === myName;
+
+      const row = document.createElement("div");
+      row.className = "msg" + (isSelf ? " self" : "");
+
+      const avatar = document.createElement("img");
+      avatar.className = "avatar";
+      avatar.src = data.avatar || "";
+      avatar.alt = "";
+
+      const body = document.createElement("div");
+      const name = textEl("div", "name", isSelf ? "我" : data.name);
+      const bubble = textEl("div", "bubble", data.text);
+      const time = textEl("div", "time", timeLabel(data.created_at));
+
+      body.appendChild(name);
+      body.appendChild(bubble);
+      if (!isSelf) body.appendChild(time);
+      row.appendChild(avatar);
+      row.appendChild(body);
+
+      chat.appendChild(row);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    // ============ 登录 / 注册 ============
+    let authMode = "login";
+
+    function setAuthMode(mode) {
+      authMode = mode;
+      $("authTitle").textContent = mode === "login" ? "登录" : "注册";
+      $("authSubmit").textContent = mode === "login" ? "登录" : "注册";
+      $("authSwitchText").textContent = mode === "login" ? "还没有账号?" : "已有账号?";
+      $("authSwitchBtn").textContent = mode === "login" ? "去注册" : "去登录";
+      $("authError").textContent = "";
+    }
+
+    $("authSwitchBtn").onclick = () =>
+      setAuthMode(authMode === "login" ? "register" : "login");
+
+    $("authSubmit").onclick = async () => {
+      const username = $("authUsername").value.trim();
+      const password = $("authPassword").value;
+      $("authError").textContent = "";
+
+      const api = authMode === "login" ? "/api/login" : "/api/register";
+      try {
+        const res = await fetch(api, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          $("authError").textContent = data.error || "出错了,再试一次";
+          return;
+        }
+        localStorage.setItem(TOKEN_KEY, data.token);
+        localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+        enterChat(data.token, data.user);
+      } catch {
+        $("authError").textContent = "连不上服务器";
+      }
+    };
+    $("authPassword").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") $("authSubmit").click();
+    });
+
+    // ============ 进入聊天 ============
+    function enterChat(token, user) {
+      myName = user.username;
+      authView.classList.add("hidden");
+      chatView.classList.remove("hidden");
+
+      socket = io("/", { auth: { token } });
+
+      socket.on("history", (list) => {
+        list.forEach(addMessage);
+      });
+
+      socket.on("msg", (msg) => addMessage(msg));
+
+      socket.on("online", (d) => {
+        $("onlineTag").textContent = `在线 ${d.count} 人`;
+      });
+
+      socket.on("connect_error", (err) => {
+        // token 失效等,踢回登录页
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(USER_KEY);
+        chatView.classList.add("hidden");
+        authView.classList.remove("hidden");
+        $("authError").textContent = err.message || "连接失败";
+      });
+    }
+
+    $("logoutBtn").onclick = () => {
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(USER_KEY);
+      location.reload();
+    };
+
+    // ============ 发送 ============
+    function send() {
+      const text = input.value.trim();
+      if (!text || !socket) return;
+      socket.emit("userMsg", text);
+      input.value = "";
+    }
+    $("sendBtn").onclick = send;
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") send();
+    });
+
+    // ============ 启动:有 token 直接进 ============
+    (function init() {
+      const token = localStorage.getItem(TOKEN_KEY);
+      const userStr = localStorage.getItem(USER_KEY);
+      if (token && userStr) {
+        try {
+          enterChat(token, JSON.parse(userStr));
+          return;
+        } catch { }
+      }
+      authView.classList.remove("hidden");
+    })();
+  </script>
+
+</body>
+
+</html>
